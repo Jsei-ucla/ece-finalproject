@@ -151,22 +151,26 @@ class TDSConvCTCModule(pl.LightningModule):
         optimizer: DictConfig,
         lr_scheduler: DictConfig,
         decoder: DictConfig,
+        num_bands: int = 2,
+        num_electrode_channels: int = 16,
+        mlp_offsets: Sequence[int] = [-1, 0, 1]
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
 
-        num_features = self.NUM_BANDS * mlp_features[-1]
+        num_features = num_bands * mlp_features[-1]
 
         # Model
         # inputs: (T, N, bands=2, electrode_channels=16, freq)
         self.model = nn.Sequential(
             # (T, N, bands=2, C=16, freq)
-            SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
+            SpectrogramNorm(channels=num_bands * num_electrode_channels),
             # (T, N, bands=2, mlp_features[-1])
             MultiBandRotationInvariantMLP(
                 in_features=in_features,
                 mlp_features=mlp_features,
-                num_bands=self.NUM_BANDS,
+                num_bands=num_bands,
+                offsets=mlp_offsets
             ),
             # (T, N, num_features)
             nn.Flatten(start_dim=2),
@@ -216,12 +220,21 @@ class TDSConvCTCModule(pl.LightningModule):
         T_diff = inputs.shape[0] - emissions.shape[0]
         emission_lengths = input_lengths - T_diff
 
-        loss = self.ctc_loss(
-            log_probs=emissions,  # (T, N, num_classes)
-            targets=targets.transpose(0, 1),  # (T, N) -> (N, T)
-            input_lengths=emission_lengths,  # (N,)
-            target_lengths=target_lengths,  # (N,)
-        )
+        device = emissions.device
+        if device.type == "mps":
+            loss = self.ctc_loss(
+                log_probs=emissions.cpu(),  # (T, N, num_classes)
+                targets=targets.transpose(0, 1).cpu(),  # (T, N) -> (N, T)
+                input_lengths=emission_lengths.cpu(),  # (N,)
+                target_lengths=target_lengths.cpu(),  # (N,)
+            ).to(device)
+        else:
+            loss = self.ctc_loss(
+                log_probs=emissions,  # (T, N, num_classes)
+                targets=targets.transpose(0, 1),  # (T, N) -> (N, T)
+                input_lengths=emission_lengths,  # (N,)
+                target_lengths=target_lengths,  # (N,)
+            )
 
         # Decode emissions
         predictions = self.decoder.decode_batch(

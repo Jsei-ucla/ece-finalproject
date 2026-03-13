@@ -17,6 +17,50 @@ TTransformIn = TypeVar("TTransformIn")
 TTransformOut = TypeVar("TTransformOut")
 Transform = Callable[[TTransformIn], TTransformOut]
 
+@dataclass
+class PCAProjection:
+    components_path: str
+    mean_path: str
+    k: int
+    components_path_right: str = ""  # uses the same components for both bands if we don't provide the right band components.
+    mean_path_right: str = ""
+
+    def __post_init__(self):
+        V_left = np.load(self.components_path)
+        mu_left = np.load(self.mean_path)
+        self._V_left = torch.from_numpy(V_left[:, :self.k]).float()
+        self._mu_left = torch.from_numpy(mu_left).float()
+
+        if self.components_path_right != "" and self.mean_path_right != "":
+            V_right = np.load(self.components_path_right)
+            mu_right = np.load(self.mean_path_right)
+            self._V_right = torch.from_numpy(V_right[:, :self.k]).float()
+            self._mu_right = torch.from_numpy(mu_right).float()
+        else:
+            self._V_right = self._V_left
+            self._mu_right = self._mu_left
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        left  = (tensor[:, 0, :] - self._mu_left)  @ self._V_left
+        right = (tensor[:, 1, :] - self._mu_right) @ self._V_right
+        return torch.stack([left, right], dim=1)
+
+@dataclass
+class ChannelSelector:
+    indices: Sequence[Any]
+
+    def __post_init__(self) -> None:
+        self._per_band = len(self.indices) > 0 and isinstance(self.indices[0], Sequence)
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        if not self._per_band:
+            idx = list(self.indices)
+            return tensor[..., idx]
+        
+        bands = tensor.unbind(dim=-2)
+        selected = [b[..., list(self.indices[i])] for i, b in enumerate(bands)]
+        return torch.stack(selected, dim=-2)
+
 
 @dataclass
 class ToTensor:
